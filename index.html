@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Ajuste Odómetro y Horas - Geotab</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 40px;
+      background-color: #1e1e1e;
+      color: #f0f0f0;
+    }
+    h2, h3 {
+      color: #4ea1ff;
+    }
+    input, button {
+      font-size: 16px;
+      margin: 5px 0;
+    }
+    input[type="text"],
+    input[type="password"],
+    input[type="number"] {
+      padding: 6px;
+      width: 300px;
+      border: 1px solid #444;
+      border-radius: 4px;
+      background-color: #2d2d2d;
+      color: #fff;
+    }
+    button {
+      padding: 8px 14px;
+      background-color: #0078d4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+    }
+    button:hover {
+      background-color: #005a9c;
+    }
+    #estado, #resultado {
+      background: #2d2d2d;
+      padding: 10px;
+      border-left: 4px solid #0078d4;
+      margin-top: 10px;
+      max-width: 400px;
+    }
+    .modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      padding-top: 60px;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+      background-color: rgba(0,0,0,0.7);
+    }
+    .modal-content {
+      background-color: #2d2d2d;
+      color: #fff;
+      margin: auto;
+      padding: 20px;
+      border: 1px solid #444;
+      width: 350px;
+      border-radius: 8px;
+      box-shadow: 0px 2px 10px rgba(0,0,0,0.3);
+    }
+    .close {
+      color: #aaa;
+      float: right;
+      font-size: 24px;
+      font-weight: bold;
+    }
+    .close:hover,
+    .close:focus {
+      color: #fff;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+
+  <h2>Gestión de Odómetro y Horas (Geotab)</h2>
+
+  <button onclick="mostrarLogin()">🔐 Iniciar sesión</button>
+
+  <div id="loginModal" class="modal">
+    <div class="modal-content">
+      <span class="close" onclick="cerrarLogin()">&times;</span>
+      <h3>Login Geotab</h3>
+      <input type="text" id="server" placeholder="Servidor (ej. https://my.geotab.com/)" value="https://my.geotab.com/"><br>
+      <input type="text" id="username" placeholder="Usuario"><br>
+      <input type="password" id="password" placeholder="Contraseña"><br>
+      <input type="text" id="database" placeholder="Base de datos"><br>
+      <button onclick="loginGeotab()">Iniciar sesión</button>
+    </div>
+  </div>
+
+  <hr>
+
+  <h3>Buscar y Actualizar por Serial Number</h3>
+  <input type="text" id="serial" placeholder="Serial Number del equipo"><br>
+  <button onclick="buscarValoresActuales()">Buscar valores actuales</button>
+
+  <div id="estado"></div>
+
+  <h3>Actualizar valores</h3>
+  <input type="number" id="odometroInput" placeholder="Nuevo odómetro (km)"><br>
+  <input type="number" id="horasInput" placeholder="Nuevas horas de motor (h)"><br>
+  <button onclick="actualizarValores()">Actualizar</button>
+
+  <div id="resultado"></div>
+
+  <script>
+    let sessionId, server, username, database, deviceId;
+    let lastSerial = null; // guarda el último serial buscado
+
+    function mostrarLogin() {
+      document.getElementById("loginModal").style.display = "block";
+    }
+    function cerrarLogin() {
+      document.getElementById("loginModal").style.display = "none";
+    }
+
+    async function loginGeotab() {
+      username = document.getElementById("username").value;
+      const password = document.getElementById("password").value;
+      database = document.getElementById("database").value;
+      server = document.getElementById("server").value + "apiv1";
+
+      const res = await fetch(server, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: "Authenticate",
+          params: { userName: username, password, database },
+          id: 1
+        })
+      });
+      const data = await res.json();
+      if (data.result) {
+        sessionId = data.result.credentials.sessionId;
+        alert("✅ Sesión iniciada correctamente.");
+        cerrarLogin();
+      } else {
+        alert("❌ Error al iniciar sesión.");
+      }
+    }
+
+    async function buscarValoresActuales() {
+      const serial = document.getElementById("serial").value.trim();
+      const estado = document.getElementById("estado");
+      const resultado = document.getElementById("resultado");
+
+      // Limpieza previa
+      deviceId = null;
+      estado.innerHTML = "";
+      resultado.innerHTML = "";
+      document.getElementById("odometroInput").value = "";
+      document.getElementById("horasInput").value = "";
+
+      if (!serial) {
+        estado.textContent = "⚠️ Ingresa un Serial Number.";
+        return;
+      }
+
+      // Guardamos el serial buscado
+      lastSerial = serial;
+
+      // 1) Obtener dispositivo
+      const devRes = await fetch(server, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: "Get",
+          params: {
+            typeName: "Device",
+            search: { serialNumber: serial },
+            credentials: { userName: username, sessionId, database }
+          },
+          id: 2
+        })
+      });
+      const devData = await devRes.json();
+      if (!devData.result || devData.result.length === 0) {
+        estado.innerText = "❌ No se encontró el dispositivo para ese serial.";
+        return;
+      }
+      if (devData.result.length > 1) {
+        estado.innerText = "⚠️ Se encontraron múltiples dispositivos. Usando el primero.\n";
+      }
+      deviceId = devData.result[0].id;
+
+      // 2) Fecha inicio del día UTC
+      const hoy = new Date(); hoy.setUTCHours(0,0,0,0);
+      const desde = hoy.toISOString();
+
+      // 3) Consultar odómetro y horas
+      const [odoList, hrsList] = await Promise.all([
+        consultarDiagnostico("DiagnosticOdometerAdjustmentId", desde),
+        consultarDiagnostico("DiagnosticEngineHoursAdjustmentId", desde)
+      ]);
+
+      const odo = getUltimoValor(odoList);
+      const hrs = getUltimoValor(hrsList);
+
+      estado.innerHTML += `
+        <strong>Valores del día actual:</strong><br>
+        Odómetro: ${odo ? (odo.data/1000).toFixed(2)+" km" : "No disponible"}<br>
+        Horas: ${hrs ? (hrs.data/3600).toFixed(2)+" h" : "No disponible"}
+      `;
+    }
+
+    async function consultarDiagnostico(diagnosticId, desde) {
+      const res = await fetch(server, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: "Get",
+          params: {
+            typeName: "StatusData",
+            search: {
+              deviceSearch: { id: deviceId },
+              diagnosticSearch: { id: diagnosticId },
+              fromDate: desde
+            },
+            credentials: { userName: username, sessionId, database }
+          },
+          id: Math.floor(Math.random()*9999)
+        })
+      });
+      const data = await res.json();
+      return data.result;
+    }
+
+    function getUltimoValor(list) {
+      if (!list || !list.length) return null;
+      return list.reduce((a,b) => new Date(a.dateTime)>new Date(b.dateTime)?a:b);
+    }
+
+    async function actualizarValores() {
+      const serial = document.getElementById("serial").value.trim();
+      const resultado = document.getElementById("resultado");
+
+      // Validar que hayamos buscado antes ese serial
+      if (serial !== lastSerial) {
+        alert("⚠️ Debes pulsar primero ‘Buscar valores actuales’ para este serial.");
+        return;
+      }
+      if (!deviceId) {
+        resultado.innerText = "❗ Primero busca un dispositivo válido.";
+        return;
+      }
+
+      const odometroKm = parseFloat(document.getElementById("odometroInput").value);
+      const horasMotor = parseFloat(document.getElementById("horasInput").value);
+      const ahora = new Date().toISOString();
+
+      const tareas = [];
+      if (!isNaN(odometroKm)) {
+        tareas.push(enviarStatusData("DiagnosticOdometerAdjustmentId", Math.round(odometroKm*1000), ahora));
+      }
+      if (!isNaN(horasMotor)) {
+        tareas.push(enviarStatusData("DiagnosticEngineHoursAdjustmentId", Math.round(horasMotor*3600), ahora));
+      }
+      if (!tareas.length) {
+        resultado.innerText = "⚠️ No se ingresaron valores para actualizar.";
+        return;
+      }
+
+      try {
+        await Promise.all(tareas);
+        alert("✅ Datos actualizados correctamente.");
+        // Limpiar sólo los inputs de valor
+        document.getElementById("odometroInput").value = "";
+        document.getElementById("horasInput").value = "";
+        resultado.innerText = "✔️ Actualización completada. Si cambias el serial, pulsa Buscar antes de actualizar.";
+        // Reiniciar contexto para la próxima actualización
+        deviceId = null;
+        lastSerial = null;
+      } catch (e) {
+        console.error(e);
+        resultado.innerText = "❌ Error al actualizar los valores.";
+      }
+    }
+
+    async function enviarStatusData(diagnosticId, valor, ahora) {
+      return fetch(server, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          method: "Add",
+          params: {
+            typeName: "StatusData",
+            entity: {
+              device: { id: deviceId },
+              diagnostic: { id: diagnosticId },
+              dateTime: ahora,
+              data: valor.toString()
+            },
+            credentials: { userName: username, sessionId, database }
+          },
+          id: Math.floor(Math.random()*9999)
+        })
+      });
+    }
+  </script>
+</body>
+</html>
